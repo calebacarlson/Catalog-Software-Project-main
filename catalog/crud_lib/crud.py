@@ -42,6 +42,22 @@ def crud_operation(dict_, operation_, collection_, update_operator_ = "", db_="c
 
         return collection.delete_one(dict_)
 
+    elif operation_ == "create_many": # untested
+        
+        return collection.insert_many(dict_)
+
+    elif operation_ == "return_update": # untested
+        
+        return collection.find_one_and_update(dict_, update_operator_)
+
+    elif operation_ == "update_many": # untested
+
+        return collection.update_many(dict_, update_operator_)
+
+    elif operation_ == "delete": # untested
+
+        return collection.delete_many(dict_)
+
     else:
 
         return False
