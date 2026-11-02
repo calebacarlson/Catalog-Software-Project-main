@@ -1,0 +1,348 @@
+:root {
+  --college-color: #174d3b;
+  --college-color-deep: #10392c;
+  --college-accent: #d3ad5c;
+  --ink: #202822;
+  --muted-ink: #58635c;
+  --paper: #f7f7f2;
+  --line: #d9ded7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Trebuchet MS", sans-serif;
+  line-height: 1.65;
+}
+
+a {
+  color: inherit;
+}
+
+.skip-link {
+  position: absolute;
+  top: -4rem;
+  left: 1rem;
+  z-index: 2;
+  padding: 0.7rem 1rem;
+  background: #fff;
+  color: var(--ink);
+}
+
+.skip-link:focus {
+  top: 1rem;
+}
+
+.college-banner {
+  display: flex;
+  min-height: 116px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.3rem max(6vw, calc((100vw - 1160px) / 2));
+  background: var(--college-color);
+  color: #fff;
+}
+
+.college-brand {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  text-decoration: none;
+}
+
+.college-seal {
+  display: grid;
+  width: 58px;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 2px solid var(--college-accent);
+  border-radius: 50%;
+  color: var(--college-accent);
+  font-family: Georgia, serif;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.college-name {
+  font-family: Georgia, serif;
+  font-size: 1.55rem;
+}
+
+.banner-label {
+  border-left: 1px solid rgb(255 255 255 / 45%);
+  padding-left: 1.4rem;
+  color: #f3e5c1;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.catalog-nav {
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.nav-inner {
+  display: flex;
+  max-width: 1160px;
+  min-height: 54px;
+  align-items: stretch;
+  gap: 1.75rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  overflow-x: auto;
+}
+
+.catalog-link {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-bottom: 3px solid transparent;
+  color: var(--muted-ink);
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.catalog-link:hover,
+.catalog-link:focus-visible {
+  border-bottom-color: var(--college-accent);
+  color: var(--college-color-deep);
+}
+
+.catalog-intro,
+.catalog-section,
+.mission-section {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding-right: 1.5rem;
+  padding-left: 1.5rem;
+}
+
+.catalog-intro {
+  padding-top: clamp(3rem, 8vw, 6.5rem);
+  padding-bottom: clamp(3.5rem, 7vw, 5.5rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  margin: 0 0 0.85rem;
+  color: #79612b;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  color: var(--college-color-deep);
+  font-family: Georgia, serif;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+h1 {
+  max-width: 760px;
+  font-size: clamp(2.6rem, 6vw, 4.7rem);
+}
+
+.intro-copy {
+  max-width: 610px;
+  margin: 1rem 0 1.4rem;
+  color: var(--muted-ink);
+  font-size: 1.08rem;
+}
+
+.text-link {
+  color: var(--college-color);
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-decoration-color: var(--college-accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.catalog-section {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: clamp(2rem, 6vw, 5rem);
+  padding-top: clamp(3.5rem, 8vw, 6.5rem);
+  padding-bottom: clamp(3.5rem, 8vw, 6.5rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.catalog-section-2 {
+  display: grid;
+  background-color: #174d3b;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: clamp(2rem, 6vw, 5rem);
+  padding-top: clamp(3.5rem, 8vw, 6.5rem);
+  padding-bottom: clamp(3.5rem, 8vw, 6.5rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.section-reverse .section-copy {
+  order: 2;
+}
+
+.section-reverse .section-image {
+  order: 1;
+}
+
+.section-copy h2,
+.mission-section h2 {
+  max-width: 540px;
+  font-size: clamp(2rem, 4vw, 3rem);
+}
+
+.section-copy p:not(.eyebrow) {
+  max-width: 540px;
+  color: var(--muted-ink);
+}
+
+.section-image {
+  margin: 0;
+}
+
+.section-image img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1.42;
+  object-fit: cover;
+}
+
+.section-image figcaption {
+  margin-top: 0.65rem;
+  color: var(--muted-ink);
+  font-size: 0.78rem;
+}
+
+.mission-section {
+  padding-top: clamp(3.5rem, 8vw, 6rem);
+  padding-bottom: clamp(3.5rem, 8vw, 6rem);
+  text-align: center;
+}
+
+.mission-section .eyebrow {
+  margin-bottom: 0.6rem;
+}
+
+.mission-section h2 {
+  margin: 0 auto;
+}
+
+.mission-section > p:last-child {
+  max-width: 760px;
+  margin: 1rem auto 0;
+  color: var(--muted-ink);
+}
+
+.college-footer {
+  background: var(--college-color);
+  color: #fff;
+}
+
+.footer-inner {
+  display: flex;
+  max-width: 1160px;
+  justify-content: space-between;
+  gap: 2rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem;
+}
+
+.footer-title {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 1.3rem;
+}
+
+.footer-note {
+  margin: 0.3rem 0 0;
+  color: #d9e3dc;
+  font-size: 0.84rem;
+}
+
+.college-footer address {
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+  font-style: normal;
+}
+
+.college-footer address a {
+  color: #f3e5c1;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .college-banner {
+    min-height: 96px;
+    padding: 1rem 1.2rem;
+  }
+
+  .college-seal {
+    width: 48px;
+    font-size: 0.85rem;
+  }
+
+  .college-name {
+    max-width: 11rem;
+    font-size: 1.15rem;
+  }
+
+  .banner-label {
+    padding-left: 0.8rem;
+    font-size: 0.65rem;
+  }
+
+  .nav-inner {
+    gap: 1.25rem;
+    padding: 0 1.2rem;
+  }
+
+  .catalog-intro,
+  .catalog-section,
+  .mission-section {
+    padding-right: 1.2rem;
+    padding-left: 1.2rem;
+  }
+
+  .catalog-section {
+    grid-template-columns: 1fr;
+    gap: 1.4rem;
+  }
+
+  .section-reverse .section-copy,
+  .section-reverse .section-image {
+    order: initial;
+  }
+
+  .footer-inner {
+    flex-direction: column;
+    gap: 1.4rem;
+    padding-right: 1.2rem;
+    padding-left: 1.2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

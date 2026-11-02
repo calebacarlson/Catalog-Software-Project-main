@@ -1,0 +1,626 @@
+from django.contrib import admin
+from django.contrib.auth import get_user_model
+from .models import University, Role, School, PERMISSION_CHOICES, DEFAULT_ROLE_PERMISSIONS
+from django.db import models
+from django import forms
+from django.forms.widgets import CheckboxSelectMultiple
+from django.contrib.auth.forms import ReadOnlyPasswordHashField
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.urls import path
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.template.response import TemplateResponse
+from django.contrib.auth.forms import AdminPasswordChangeForm
+from django.contrib import messages
+from django.http import HttpResponseRedirect
+from django.urls import reverse
+from django.utils.html import escape
+from django.shortcuts import get_object_or_404
+from django.core.exceptions import PermissionDenied
+
+User = get_user_model()
+
+class CustomUserCreationForm(forms.ModelForm):
+    """
+    Form for creating new users in admin.
+    Adds password confirmation (not a model field).
+    """
+    password1 = forms.CharField(
+        label='Password',
+        widget=forms.PasswordInput,
+        help_text="Enter a strong password.",
+    )
+    password2 = forms.CharField(
+        label='Password confirmation',
+        widget=forms.PasswordInput,
+        help_text="Enter the same password for verification.",
+    )
+
+    class Meta:
+        model = User
+        fields = ('email', 'first_name', 'last_name', 'university', 'school', 'role',
+                  'is_active', 'is_staff', 'is_superuser')
+
+    def clean_password1(self):
+        password = self.cleaned_data.get('password1')
+        if password:
+            try:
+                validate_password(password)
+            except ValidationError as e:
+                raise forms.ValidationError(list(e.messages))
+        return password
+
+    def clean_password2(self):
+        p1 = self.cleaned_data.get('password1')
+        p2 = self.cleaned_data.get('password2')
+        if p1 and p2 and p1 != p2:
+            raise forms.ValidationError("Passwords don't match.")
+        return p2
+
+    def save(self, commit=True):
+        user = super().save(commit=False)
+        user.set_password(self.cleaned_data['password1'])
+        if commit:
+            user.save()
+        return user
+
+
+class CustomUserChangeForm(forms.ModelForm):
+    """
+    Form for editing existing users in admin.
+    Displays password hash as readonly (never editable raw).
+    """
+    password = ReadOnlyPasswordHashField(
+        label="Password",
+        help_text=(
+            "Raw passwords are not stored, so there is no way to see this "
+            "user's password, but you can change it using "
+            "<a href=\"../password/\">this form</a>."
+        ),
+    )
+
+    class Meta:
+        model = User
+        fields = ('email', 'password', 'first_name', 'last_name', 'university',
+                  'school', 'role', 'is_active', 'is_staff', 'is_superuser')
+
+    def clean_password(self):
+        # Field is readonly — return the initial hash regardless of input
+        return self.initial.get('password')
+
+    
+@admin.register(University)
+class UniversityAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug', 'is_active', 'created_at')
+    search_fields = ('name', 'slug')
+    prepopulated_fields = {'slug': ('name',)}
+
+    def has_module_permission(self, request):
+        """Only superusers see University in the admin index."""
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+
+class RoleAdminForm(forms.ModelForm):
+    """Role editor with checkbox permissions and delegation validation."""
+    permissions = forms.MultipleChoiceField(
+        choices=PERMISSION_CHOICES,
+        widget=CheckboxSelectMultiple,
+        required=False,
+        help_text='Select permissions granted to this role.',
+    )
+
+    class Meta:
+        model = Role
+        fields = ('name', 'role_type', 'level', 'university', 'permissions')
+
+    def __init__(self, *args, **kwargs):
+        self.request_user = kwargs.pop('request_user', None)
+        super().__init__(*args, **kwargs)
+
+        if not self.is_bound and not self.instance.pk:
+            role_type = self.initial.get('role_type', Role.RoleType.CAMPUS_VIEWER)
+            self.initial['permissions'] = DEFAULT_ROLE_PERMISSIONS.get(role_type, [])
+
+    def clean(self):
+        cleaned_data = super().clean()
+        permissions = cleaned_data.get('permissions', [])
+        level = cleaned_data.get('level')
+
+        if not self.request_user or self.request_user.is_superuser:
+            return cleaned_data
+
+        creator_role = self.request_user.role
+        if not creator_role:
+            raise forms.ValidationError(
+                'You do not have a role configured to delegate permissions.'
+            )
+
+        if level is not None and level <= creator_role.level:
+            raise forms.ValidationError(
+                f'Hierarchy error: the new role level must be greater than '
+                f'your level ({creator_role.level}).'
+            )
+
+        unauthorized_permissions = set(permissions) - set(creator_role.permissions)
+        if unauthorized_permissions:
+            raise forms.ValidationError(
+                'You cannot grant permissions you do not possess: '
+                f"{', '.join(sorted(unauthorized_permissions))}"
+            )
+
+        return cleaned_data
+
+
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    form = RoleAdminForm
+    list_display = ('name', 'role_type', 'level', 'university')
+    list_filter = ('role_type', 'level', 'university')
+    search_fields = ('name',)
+
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        form_class = super().get_form(request, obj, change=change, **kwargs)
+
+        class FormWithUser(form_class):
+            def __init__(self, *args, **form_kwargs):
+                form_kwargs['request_user'] = request.user
+                super().__init__(*args, **form_kwargs)
+
+        return FormWithUser
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        if request.user.is_superuser:
+            return queryset
+
+        scoped_university = getattr(request, 'scoped_university', None)
+        creator_role = request.user.role
+        if not scoped_university or not creator_role:
+            return queryset.none()
+
+        return queryset.filter(
+            models.Q(university=scoped_university) | models.Q(university__isnull=True),
+            level__gte=creator_role.level,
+        )
+
+    def get_fieldsets(self, request, obj=None):
+        if request.user.is_superuser:
+            return (
+                (None, {'fields': ('name', 'role_type', 'level', 'university', 'permissions')}),
+            )
+        return (
+            (None, {'fields': ('name', 'role_type', 'level', 'permissions')}),
+        )
+
+    def has_module_permission(self, request):
+        if not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.university
+            and request.user.role.has_permission('roles.view')
+        )
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not self.has_module_permission(request):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        creator_role = request.user.role
+        is_visible_university = (
+            obj.university_id is None
+            or obj.university_id == getattr(scoped_university, 'id', None)
+        )
+        return is_visible_university and obj.level >= creator_role.level
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('roles.add')
+        )
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('roles.edit')
+        ):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        return (
+            obj.university_id == getattr(scoped_university, 'id', None)
+            and obj.level > request.user.role.level
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('roles.delete')
+        ):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        return (
+            obj.university_id == getattr(scoped_university, 'id', None)
+            and obj.level > request.user.role.level
+        )
+
+    def save_model(self, request, obj, form, change):
+        if not request.user.is_superuser:
+            scoped_university = getattr(request, 'scoped_university', None)
+            if scoped_university:
+                obj.university = scoped_university
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(School)
+class SchoolAdmin(admin.ModelAdmin):
+    list_display = ('name', 'university', 'created_at')
+    search_fields = ('name',)
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        if request.user.is_superuser:
+            return queryset
+        scoped_university = getattr(request, 'scoped_university', None)
+        if scoped_university:
+            return queryset.filter(university=scoped_university)
+        return queryset.none()
+
+    def get_fieldsets(self, request, obj=None):
+        fields = ('name', 'university') if request.user.is_superuser else ('name',)
+        return ((None, {'fields': fields}),)
+
+    def has_module_permission(self, request):
+        if not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.university
+            and request.user.role.has_permission('schools.view')
+        )
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not self.has_module_permission(request):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        return obj.university_id == getattr(scoped_university, 'id', None)
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('schools.add')
+        )
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('schools.edit')
+        ):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        return obj.university_id == getattr(scoped_university, 'id', None)
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('schools.delete')
+        ):
+            return False
+        if obj is None:
+            return True
+        scoped_university = getattr(request, 'scoped_university', None)
+        return obj.university_id == getattr(scoped_university, 'id', None)
+
+    def save_model(self, request, obj, form, change):
+        if not request.user.is_superuser:
+            scoped_university = getattr(request, 'scoped_university', None)
+            if scoped_university:
+                obj.university = scoped_university
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(User)
+class CustomUserAdmin(admin.ModelAdmin):
+    form = CustomUserChangeForm        
+    add_form = CustomUserCreationForm
+    change_password_form = AdminPasswordChangeForm
+
+    # Disable SQL-based M2M widgets that trigger unhashable errors in Mongo
+    filter_horizontal = ()
+    filter_vertical = ()
+
+    list_display = ('email', 'university', 'role', 'is_staff', 'is_superuser', 'is_active')
+    list_filter = ('is_staff', 'is_superuser', 'is_active', 'university', 'role')
+    search_fields = ('email', 'first_name', 'last_name')
+    ordering = ('email',)
+
+    readonly_fields = ('date_joined', 'last_login')
+
+    # Form layout when creating a new user in admin
+    add_fieldsets = (
+        (None, {
+            'classes': ('wide',),
+            'fields': (
+                'email',
+                'password1',
+                'password2',
+                'university',
+                'school',
+                'role',
+                'is_staff',
+                'is_superuser',
+                'is_active',
+            ),
+        }),
+    )
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """
+        Scope foreign key dropdowns for campus admins:
+        - role: global or same-university roles at the user's level or below
+        - school: schools in the user's university
+        - university: locked to the user's university
+        """
+        scoped_uni = getattr(request, 'scoped_university', None)
+
+        if scoped_uni and not request.user.is_superuser:
+            if db_field.name == 'role':
+                user_level = request.user.role.level if request.user.role else 4
+                kwargs['queryset'] = Role.objects.filter(
+                    models.Q(university=scoped_uni) | models.Q(university__isnull=True),
+                    level__gte=user_level,
+                )
+
+            if db_field.name == 'school':
+                kwargs['queryset'] = School.objects.filter(university=scoped_uni)
+
+            if db_field.name == 'university':
+                kwargs['queryset'] = University.objects.filter(id=scoped_uni.id)
+                kwargs['initial'] = scoped_uni.id
+
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        """Keep non-superuser user records within their assigned tenant."""
+        scoped_uni = getattr(request, 'scoped_university', None)
+        if scoped_uni and not request.user.is_superuser:
+            obj.university = scoped_uni
+        super().save_model(request, obj, form, change)
+
+    def get_queryset(self, request):
+        """
+        Scope the user list by tenant.
+        
+        - Superusers: see all users across all universities.
+        - Campus admins: see only users within their scoped university,
+        and NEVER see superusers (prevents enumeration of platform admins).
+        """
+        qs = super().get_queryset(request)
+        
+        if request.user.is_superuser:
+            return qs
+        
+        scoped_uni = getattr(request, 'scoped_university', None)
+        if scoped_uni:
+            return qs.filter(university=scoped_uni, is_superuser=False)
+        
+        # Fallback: authenticated staff hitting admin without scope → see nothing
+        return qs.none()
+
+
+    def get_fieldsets(self, request, obj=None):
+        can_assign_role = request.user.is_superuser or bool(
+            request.user.role
+            and request.user.role.has_permission('users.assign_role')
+        )
+
+        if request.user.is_superuser:
+            if obj is None:
+                return (
+                    (None, {
+                        'classes': ('wide',),
+                        'fields': (
+                            'email', 'password1', 'password2',
+                            'first_name', 'last_name',
+                            'university', 'school', 'role',
+                            'is_active', 'is_staff', 'is_superuser',
+                        ),
+                    }),
+                )
+            return (
+                (None, {'fields': ('email', 'password')}),
+                ('Personal info', {'fields': ('first_name', 'last_name')}),
+                ('Tenant & Affiliation', {'fields': ('university', 'school', 'role')}),
+                ('Permissions', {'fields': ('is_active', 'is_staff', 'is_superuser')}),
+                ('Important dates', {'fields': ('last_login', 'date_joined')}),
+            )
+
+        if obj is None:
+            add_fields = [
+                'email', 'password1', 'password2', 'first_name', 'last_name',
+                'university', 'school',
+            ]
+            if can_assign_role:
+                add_fields.append('role')
+            add_fields.append('is_active')
+            return (
+                (None, {
+                    'classes': ('wide',),
+                    'fields': tuple(add_fields),
+                }),
+            )
+
+        tenant_fields = ['university', 'school']
+        if can_assign_role:
+            tenant_fields.append('role')
+        return (
+            (None, {'fields': ('email', 'password')}),
+            ('Personal info', {'fields': ('first_name', 'last_name')}),
+            ('Tenant & Affiliation', {'fields': tuple(tenant_fields)}),
+            ('Status', {'fields': ('is_active',)}),
+            ('Important dates', {'fields': ('last_login', 'date_joined')}),
+        )
+
+    def has_module_permission(self, request):
+        if not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.university
+            and request.user.role.has_permission('users.view')
+        )
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not self.has_module_permission(request):
+            return False
+        if obj is None:
+            return True
+        scoped_uni = getattr(request, 'scoped_university', None)
+        return not obj.is_superuser and obj.university_id == getattr(scoped_uni, 'id', None)
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        return bool(
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('users.add')
+        )
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('users.edit')
+        ):
+            return False
+        if obj is None:
+            return True
+        if obj.is_superuser:
+            return False
+        scoped_uni = getattr(request, 'scoped_university', None)
+        return obj.university_id == getattr(scoped_uni, 'id', None)
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not (
+            request.user.is_staff
+            and request.user.role
+            and request.user.role.has_permission('users.delete')
+        ):
+            return False
+        if obj is None:
+            return True
+        if obj.is_superuser:
+            return False
+        scoped_uni = getattr(request, 'scoped_university', None)
+        return obj.university_id == getattr(scoped_uni, 'id', None)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<id>/password/',
+                self.admin_site.admin_view(self.user_change_password),
+                name='accounts_user_password_change',
+            ),
+        ]
+        # Custom URLs MUST come first — Django matches top-down
+        return custom_urls + urls
+
+    def user_change_password(self, request, id, form_url=''):
+        user = get_object_or_404(self.get_queryset(request), pk=id)
+
+        # Permission check — respects your tenant scoping
+        if not self.has_change_permission(request, user):
+            raise PermissionDenied
+
+        if request.method == 'POST':
+            form = self.change_password_form(user, request.POST)
+            if form.is_valid():
+                form.save()
+                messages.success(request, f'Password changed for {user.email}.')
+                return HttpResponseRedirect(
+                    reverse('admin:accounts_user_change', args=[user.pk])
+                )
+        else:
+            form = self.change_password_form(user)
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': f'Change password: {escape(user.email)}',
+            'form': form,
+            'opts': self.model._meta,
+            'original': user,
+            'save_as': False,
+            'show_save': True,
+        }
+        return TemplateResponse(
+            request,
+            'admin/auth/user/change_password.html',
+            context,
+        )
+    
+    def get_form(self, request, obj=None, **kwargs):
+        """
+        Use CustomUserCreationForm for the add view, CustomUserChangeForm for edit.
+        """
+        if obj is None:
+            kwargs['form'] = self.add_form
+        return super().get_form(request, obj, **kwargs)

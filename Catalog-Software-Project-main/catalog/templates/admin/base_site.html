@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% load i18n %}
+
+{% block title %}{{ title }} | {{ site_header|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name">
+    <a href="{% block site_header_link %}{% url 'admin:index' %}{% endblock %}">
+        {% if scoped_university %}
+            {{ scoped_university.name }} Administration
+        {% elif request.user.is_superuser %}
+            Platform Administration
+        {% else %}
+            {{ site_header|default:_('Django administration') }}
+        {% endif %}
+    </a>
+</h1>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

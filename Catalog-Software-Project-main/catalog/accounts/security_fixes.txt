@@ -1,0 +1,124 @@
+🔴 Critical — Address Before Production
+1. RoleAdmin Lacks Permission Overrides
+Concern: RoleAdmin has get_queryset() scoping but no get_fieldsets(), has_change_permission(), or has_delete_permission() overrides.
+
+Expected behavior: A campus admin should not be able to edit global roles (university=None), modify the permissions JSONField to grant themselves elevated permissions, or create roles that affect other universities.
+
+Why: The entire CustomUserAdmin hardening is bypassable if a campus admin can edit a role. They could add is_superuser-granting permissions to their own role, or edit a global role that affects every tenant. This is the same class of vulnerability as the is_superuser fieldset leak — just one layer deeper.
+
+2. Role Permissions Field Is Unvalidated
+Concern: The Role.permissions JSONField accepts any string. No validation ensures campus admins can only grant permissions they themselves possess.
+
+Expected behavior: A campus admin editing/creating a role should be prevented from adding permission strings that exceed their own permission set (privilege escalation guard).
+
+Why: Even with RoleAdmin locked down to tenant-scoped roles, a campus admin could add accounts.change_user + custom permission strings to a role, assign it to themselves or another user, and escalate within their tenant beyond what was intended. Industry pattern: "a user cannot grant permissions they don't have."
+
+3. Existing Data Not Audited Against New Validation
+Concern: Step 1's clean() validation blocks new is_staff=True users without roles/universities, but existing database records in that broken state will raise ValidationError on any save (password change, profile update, etc.).
+
+Expected behavior: Run the audit query before relying on validation in production:
+
+python
+User.objects.filter(is_staff=True, is_superuser=False, role__isnull=True).count()
+User.objects.filter(is_staff=True, is_superuser=False, university__isnull=True).count()
+Both should return 0. If not, remediate the broken records.
+
+Why: Validation fails loudly on save, which looks like a regression bug to users. A legitimate staff member logging in and updating their profile could suddenly see a ValidationError traceback. Audit the data, fix orphans, then trust the validation going forward.
+
+🟡 Medium — Harden Soon
+4. list_filter Leaks Information to Campus Admins
+Concern: CustomUserAdmin.list_filter = ('is_staff', 'is_superuser', 'is_active', 'university', 'role') is shown to all admins. A campus admin sees:
+
+A university dropdown enumerating every university in the system
+An is_superuser filter that confirms superusers exist (even though get_queryset hides them)
+Expected behavior: Override get_list_filter(request) to return a scoped subset for non-superusers — remove is_superuser and university filters entirely for campus admins.
+
+Why: Not a direct security breach (data is still filtered by get_queryset), but it's an information leak. Reconnaissance value for an attacker who compromises a campus admin account: knowing other tenants exist, their names, and the structure of the platform admin layer.
+
+5. Session Fixation on Permission Revocation
+Concern: If a superuser revokes a campus admin's is_staff flag or deletes their role, that user's active session continues working until logout or session expiry.
+
+Expected behavior: Permission changes should invalidate active sessions for the affected user, forcing re-authentication.
+
+Why: When you fire or demote an admin, they shouldn't retain admin access until their session cookie expires (potentially days). Standard pattern: on User.save(), if is_staff or role changed, call user.auth_token_set.all().delete() or equivalent session invalidation. Django provides update_session_auth_hash() for password changes — a similar hook is needed for permission changes.
+
+6. No Audit Log for Permission Changes
+Concern: Django's LogEntry logs admin actions (user X edited user Y), but doesn't semantically distinguish "assigned role" or "promoted to is_staff" from any other field edit.
+
+Expected behavior: Dedicated audit trail for security-sensitive changes: role assignments, is_staff toggles, is_superuser toggles, university reassignments. Should be queryable and tamper-evident (append-only).
+
+Why: Compliance and incident response. If an account is compromised and used to grant admin access to another account, you need a clear timeline of "when did user X get is_staff=True, and who did it?" LogEntry has this data buried in change_message, but it's not queryable at scale. For a multi-tenant SaaS, this is a baseline expectation.
+
+7. No Database-Level Constraint on is_staff Requires Role
+Concern: Step 1's validation is Python-only (clean() + save() override). A direct SQL UPDATE or User.objects.update(is_staff=True) call bypasses it.
+
+Expected behavior: Add a CHECK constraint via Meta.constraints enforcing the rule at the database level:
+
+CHECK (NOT (is_staff AND NOT is_superuser AND role_id IS NULL))
+Why: Defense-in-depth. Python-level validation protects against normal application code paths; DB constraints protect against raw SQL, bulk update() calls, and migrations. For a security-critical invariant, both layers should enforce it. I flagged this as "future hardening" in Step 1 — it's still open.
+
+🟢 Lower Priority — Known Trade-offs
+8. Admin URL Flicker for Campus Admins
+Concern: Django's admin generates all internal links (breadcrumbs, "Save and continue editing", "Home") pointing to /app-admin/. Campus admins click these, briefly see /app-admin/ in the URL bar, then get middleware-redirected to /campus-admin/<slug>/.
+
+Expected behavior: Internal admin links generate /campus-admin/<slug>/ URLs directly for campus admins, eliminating the redirect round-trip.
+
+Why: The current behavior is functionally correct (middleware handles it), but creates a URL flicker that could confuse users or make them think the system is misrouting. This is the trade-off I called out in Step 6: fixing all internal URLs requires template overrides for dozens of admin templates. The middleware redirect is the pragmatic solution. Flag for future UX polish, not security.
+
+9. admin_catalog_view Decorator Is Inconsistent with Login Logic
+Concern: admin_catalog_view uses @user_passes_test(lambda u: u.is_campus_admin), but Step 5's login logic uses is_staff and role and university. A user with is_campus_admin=True but is_staff=False can access admin_catalog_view but not the admin panel.
+
+Expected behavior: Both checks use the same predicate. Either:
+
+Update the decorator to lambda u: u.is_staff and u.role and u.university, OR
+Create a reusable is_admin_user(user) helper that both views + login use.
+Why: Not a vulnerability by itself, but inconsistency breeds bugs. Future developers will add more admin-only views and copy whichever pattern they see first. One source of truth for "is this user an admin?" prevents divergence.
+
+10. MFA / 2FA Not Implemented for Admin Access
+Concern: Admin accounts (both superuser and campus admin) authenticate with password only. No second factor.
+
+Expected behavior: Admin accounts (anyone with is_staff=True) require a second factor — TOTP, WebAuthn, or similar — before admin URLs become accessible.
+
+Why: Admin accounts are the highest-value compromise target. Password-only auth means a single phishing success or credential-stuffing hit grants full tenant access. Industry baseline for SaaS admin panels is MFA. Not in scope for the current refactor, but should be on the roadmap before onboarding real customers.
+
+11. No Rate Limiting on Admin Login
+Concern: /login/ has no rate limiting. An attacker can brute-force credentials against known admin emails indefinitely.
+
+Expected behavior: Rate limit login attempts per-IP and per-email. Standard thresholds: 5 attempts per 15 minutes per email, 20 per hour per IP, with exponential backoff or temporary lockout.
+
+Why: Especially important because /app-admin/ is a known URL once discovered. Your Backend Layer architecture already specifies rate limiting on license activation (10/hour/IP) — the same pattern should apply to admin login.
+
+12. Logging Destination Not Verified
+Concern: Step 4's middleware adds logger.warning() calls for security events (cross-tenant access, non-superuser hitting /app-admin/, etc.), but Django's default logging config may route WARNING-level logs to /dev/null depending on settings.
+
+Expected behavior: LOGGING config in settings.py has a handler (file, stdout for container deployments, or a service like Sentry/CloudWatch) that captures WARNING and above. Verify by triggering a known violation and confirming the log appears.
+
+Why: Audit logs that aren't captured are theater. The entire point of the middleware logging additions is forensics — if the logs disappear, the hardening work is wasted. This is a one-time verification, not ongoing work.
+
+Summary Priority Matrix
+#	Concern	Priority	Effort
+1	RoleAdmin lacks permission overrides	🔴 Critical	Medium
+2	Role permissions field unvalidated	🔴 Critical	Medium
+3	Existing data not audited	🔴 Critical	Low
+4	list_filter info leak	🟡 Medium	Low
+5	Session fixation on permission revocation	🟡 Medium	Medium
+6	No audit log for permission changes	🟡 Medium	High
+7	No DB-level constraint on is_staff + role	🟡 Medium	Low
+8	Admin URL flicker	🟢 Low	High
+9	admin_catalog_view decorator inconsistency	🟢 Low	Low
+10	No MFA	🟢 Low (roadmap)	High
+11	No rate limiting on login	🟢 Low (roadmap)	Low
+12	Logging destination unverified	🟢 Low	Low
+Recommended Next Steps
+Immediate (before production or shared testing):
+
+Items 1, 2, 3 — these close the remaining privilege escalation paths and prevent breaking existing users.
+Short-term (next sprint):
+
+Items 4, 7, 9, 12 — low-effort hardening that compounds well.
+Medium-term (before paying customers):
+
+Items 5, 6, 10, 11 — compliance and incident response baseline for SaaS.
+Future / low urgency:
+
+Item 8 — pure UX polish, not security.
